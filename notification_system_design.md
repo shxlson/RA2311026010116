@@ -156,3 +156,103 @@ Client heartbeat every 30s:
 event: ping
 data: {}
 ```
+
+## Stage 2
+
+### Storage Choice
+Use PostgreSQL. It is reliable, supports strong consistency, flexible indexing, JSON if needed, and mature tooling for pagination and analytics. It also works well with read replicas and partitioning as volume grows.
+
+### Schema (SQL)
+```sql
+CREATE TABLE users (
+	user_id UUID PRIMARY KEY,
+	email TEXT UNIQUE NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TYPE notification_type AS ENUM ('event', 'placement', 'result');
+CREATE TYPE notification_severity AS ENUM ('info', 'warn', 'urgent');
+
+CREATE TABLE notifications (
+	notification_id UUID PRIMARY KEY,
+	type notification_type NOT NULL,
+	message TEXT NOT NULL,
+	severity notification_severity NOT NULL,
+	link TEXT,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_notifications (
+	user_id UUID NOT NULL REFERENCES users(user_id),
+	notification_id UUID NOT NULL REFERENCES notifications(notification_id),
+	read_at TIMESTAMPTZ,
+	dismissed_at TIMESTAMPTZ,
+	PRIMARY KEY (user_id, notification_id)
+);
+
+CREATE INDEX idx_notifications_created_at ON notifications (created_at DESC);
+CREATE INDEX idx_user_notifications_unread ON user_notifications (user_id, read_at) WHERE read_at IS NULL;
+CREATE INDEX idx_user_notifications_active ON user_notifications (user_id, dismissed_at) WHERE dismissed_at IS NULL;
+```
+
+### Growth Problems and Fixes
+- Hot read path for listing notifications: add composite indexes and use cursor pagination.
+- Large tables: partition notifications by month on created_at; archive old partitions.
+- High read volume: add read replicas and cache unread counts with short TTL.
+- High write volume: batch insert user_notifications for fan-out or use async workers.
+- Long history queries: move old data to cold storage and keep only recent months online.
+
+### Queries (based on Stage 1)
+
+Create notification (admin action):
+```sql
+INSERT INTO notifications (notification_id, type, message, severity, link)
+VALUES ($1, $2, $3, $4, $5);
+```
+
+Fan-out to users (example for a target list):
+```sql
+INSERT INTO user_notifications (user_id, notification_id)
+SELECT unnest($1::uuid[]), $2::uuid;
+```
+
+List notifications (cursor pagination, latest first):
+```sql
+SELECT n.notification_id AS id,
+	n.type,
+	n.message,
+	n.severity,
+	n.link,
+	n.created_at AS timestamp,
+	(un.read_at IS NOT NULL) AS read
+FROM user_notifications un
+JOIN notifications n ON n.notification_id = un.notification_id
+WHERE un.user_id = $1
+	AND un.dismissed_at IS NULL
+	AND ($2::notification_type IS NULL OR n.type = $2)
+	AND ($3::boolean IS NULL OR ($3 = true AND un.read_at IS NULL))
+	AND (n.created_at, n.notification_id) < ($4::timestamptz, $5::uuid)
+ORDER BY n.created_at DESC, n.notification_id DESC
+LIMIT $6;
+```
+
+Unread count:
+```sql
+SELECT COUNT(*) AS unread
+FROM user_notifications
+WHERE user_id = $1 AND read_at IS NULL AND dismissed_at IS NULL;
+```
+
+Mark read:
+```sql
+UPDATE user_notifications
+SET read_at = now()
+WHERE user_id = $1 AND notification_id = $2;
+```
+
+Dismiss:
+```sql
+UPDATE user_notifications
+SET dismissed_at = now()
+WHERE user_id = $1 AND notification_id = $2;
+```
