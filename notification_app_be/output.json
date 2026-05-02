@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-05-02T05:57:41.330Z",
+  "depots": [
+    {
+      "depotId": 3,
+      "mechanicHours": 188,
+      "totalImpact": 6,
+      "totalDuration": 12,
+      "taskIds": [
+        "eda5e6af-b010-44d5-a4f1-c7121ae08108",
+        "26aea10f-ad63-4046-86f4-87ce772c461c"
+      ],
+      "tasks": [
+        {
+          "TaskID": "eda5e6af-b010-44d5-a4f1-c7121ae08108",
+          "Duration": 8,
+          "Impact": 2
+        },
+        {
+          "TaskID": "26aea10f-ad63-4046-86f4-87ce772c461c",
+          "Duration": 4,
+          "Impact": 4
+        }
+      ]
+    },
+    {
+      "depotId": 4,
+      "mechanicHours": 97,
+      "totalImpact": 4,
+      "totalDuration": 4,
+      "taskIds": [
+        "26aea10f-ad63-4046-86f4-87ce772c461c"
+      ],
+      "tasks": [
+        {
+          "TaskID": "26aea10f-ad63-4046-86f4-87ce772c461c",
+          "Duration": 4,
+          "Impact": 4
+        }
+      ]
+    }
+  ]
+}
