@@ -357,3 +357,45 @@ Notifications are fetched on every page load for every student, overwhelming the
 - Cursor-based incremental fetch on reconnect.
 
 This reduces DB reads per page load and shifts most traffic to cache or push paths.
+
+## Stage 5
+
+### Shortcomings in the Current Pseudocode
+- Serial loop is slow for 50,000 users.
+- No retries, no backoff, no dead-letter handling.
+- Email send and DB write are tightly coupled; partial failure leaves inconsistent state.
+- No idempotency; reruns can create duplicates.
+
+### What if 200 Email Sends Fail Midway?
+- Keep DB as the source of truth and record delivery status per user.
+- Retry failed emails asynchronously with exponential backoff.
+- Send to a dead-letter queue after N retries for manual replay.
+
+### Should DB Write and Email Send Happen Together?
+No. Persist first, then deliver asynchronously. Email is external and unreliable; coupling it to DB writes risks partial failure and long transactions. Use an outbox pattern to guarantee delivery attempts.
+
+### Revised Pseudocode
+```
+function notify_all(student_ids, message, type):
+	notification_id = create_notification(message, type)
+	bulk_insert_user_notifications(student_ids, notification_id, status="pending")
+	enqueue_jobs(student_ids, notification_id)
+
+worker process:
+	while job = dequeue():
+		if already_sent(job.student_id, job.notification_id):
+			continue
+		send_email(job.student_id, job.notification_id)
+		push_realtime(job.student_id, job.notification_id)
+		mark_sent(job.student_id, job.notification_id)
+		if failure:
+			retry_with_backoff(job)
+			if max_retries_exceeded:
+				move_to_dead_letter(job)
+```
+
+### Reliability and Speed Improvements
+- Bulk insert for DB writes.
+- Job queue for fan-out (SQS/RabbitMQ/Kafka).
+- Idempotency keys for email sends to avoid duplicates.
+- Separate workers for email and in-app to reduce coupling.
