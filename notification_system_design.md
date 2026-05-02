@@ -317,3 +317,43 @@ JOIN notifications n ON n.notification_id = un.notification_id
 WHERE n.type = 'placement'
 	AND n.created_at >= now() - interval '7 days';
 ```
+
+## Stage 4
+
+### Problem
+Notifications are fetched on every page load for every student, overwhelming the DB.
+
+### Proposed Solutions
+
+1) Cache recent notifications per user
+- Strategy: Store last N notifications and unread count in Redis with a short TTL.
+- Tradeoffs: Cache invalidation on new notifications; eventual consistency for a few seconds.
+
+2) Push instead of pull
+- Strategy: Use SSE/WebSocket to deliver new notifications and refresh the client view without reloading from DB each page load.
+- Tradeoffs: More connection state and infra; needs reconnect logic.
+
+3) Delta sync with cursor
+- Strategy: On page load, request only notifications newer than a cursor (last seen timestamp + id).
+- Tradeoffs: Requires client state; still hits DB but reduces payload.
+
+4) Background fan-out + materialized read model
+- Strategy: Precompute user_notification rows and keep unread counts updated by async workers.
+- Tradeoffs: Higher write amplification; needs reliable job processing.
+
+5) Read replicas + rate limits
+- Strategy: Route list reads to replicas; cap refresh rate per client and use conditional requests.
+- Tradeoffs: Replication lag; extra infra cost.
+
+### Performance Improvements
+- Combine cache + cursor: fast hits for most page loads, smaller DB queries for misses.
+- Add conditional requests: `If-None-Match` with ETags to avoid sending unchanged data.
+- Tighten indexes: composite indexes aligned to unread + created_at.
+- Partition old data: keep hot partitions small for fast scans.
+
+### Recommended Mix
+- Redis cache for unread count + recent items.
+- SSE for real-time updates.
+- Cursor-based incremental fetch on reconnect.
+
+This reduces DB reads per page load and shifts most traffic to cache or push paths.
