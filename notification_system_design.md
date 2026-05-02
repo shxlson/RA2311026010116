@@ -256,3 +256,64 @@ UPDATE user_notifications
 SET dismissed_at = now()
 WHERE user_id = $1 AND notification_id = $2;
 ```
+
+## Stage 3
+
+### Query Review
+Given query:
+```sql
+SELECT * FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC;
+```
+
+Is it accurate? Not if the schema uses a separate user mapping table. In the Stage 2 design, user state (read/dismissed) lives in `user_notifications`, not in `notifications`. So this should query `user_notifications` joined to `notifications`.
+
+Why slow?
+- It likely scans a large table and then sorts, because there is no composite index on `(studentID, isRead, createdAt)`.
+- `SELECT *` pulls unnecessary columns and increases IO.
+
+What to change:
+- Move read state to `user_notifications` (or ensure it is already there).
+- Add a composite index that matches the filter + order.
+- Use cursor pagination to avoid deep offset scans.
+
+Likely cost:
+- Current: full scan + sort $O(N \log N)$ on 5,000,000 rows.
+- With index: index scan on $(user\_id, read\_at, created\_at)$ around $O(\log N + k)$ for $k$ results.
+
+Index on every column?
+No. Too many indexes slow writes, increase storage, and can degrade planner choices. Index only what matches hot filters and ordering.
+
+### Improved Query (aligned with Stage 2)
+```sql
+SELECT n.notification_id AS id,
+	n.type,
+	n.message,
+	n.severity,
+	n.created_at AS timestamp
+FROM user_notifications un
+JOIN notifications n ON n.notification_id = un.notification_id
+WHERE un.user_id = $1
+	AND un.read_at IS NULL
+	AND un.dismissed_at IS NULL
+ORDER BY n.created_at DESC
+LIMIT $2;
+```
+
+Suggested index:
+```sql
+CREATE INDEX idx_unread_by_user_time
+ON user_notifications (user_id, read_at, dismissed_at, notification_id);
+```
+
+And keep `notifications(created_at DESC)` from Stage 2.
+
+### Query: Students with Placement in Last 7 Days
+```sql
+SELECT DISTINCT un.user_id
+FROM user_notifications un
+JOIN notifications n ON n.notification_id = un.notification_id
+WHERE n.type = 'placement'
+	AND n.created_at >= now() - interval '7 days';
+```
